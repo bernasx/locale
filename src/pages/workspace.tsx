@@ -1,0 +1,114 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ArrowDownToLine, ArrowLeft, ArrowRight, Braces, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, FileJson2, FolderClosed, Globe2, HardDrive, Languages, LayoutGrid, Loader2, Menu, MoreHorizontal, Plus, Search, Settings2, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { toast } from 'sonner';
+import { Brand } from '@/components/brand';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { AddLanguageDialog } from '@/components/add-language-dialog';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { ConfirmDialog, ExportDialog, ImportDialog, ProjectDialog } from '@/components/project-dialogs';
+import { LanguageMark, TranslationTable } from '@/components/translation-table';
+import { collectRows, createDemo, editTranslation, isMissing, keyLabel, namespace, rowValue, stringLeaves, type Project, type TranslationRow } from '@/lib/translations';
+import { downloadFile } from '@/lib/export';
+import { useProjects } from '@/hooks/use-projects';
+
+const PAGE_SIZE = 40;
+type Confirmation = { title: string; description: string; action: () => void | Promise<void> };
+
+export default function Workspace() {
+  const { projects, loading, saveState, storageError, update, remove, retry } = useProjects();
+  const [params, setParams] = useSearchParams();
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [tab, setTab] = useState<'translations' | 'languages'>('translations');
+  const [selectedFile, setSelectedFile] = useState('all');
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [page, setPage] = useState(0);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [addLanguageOpen, setAddLanguageOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importCode, setImportCode] = useState<string | null>(null);
+  const [exportCode, setExportCode] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [mobileSidebar, setMobileSidebar] = useState(false);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const initialized = useRef(false);
+  const project = projects.find(p => p.id === activeId) ?? projects[0];
+  const rows = useMemo(() => project ? collectRows(project) : [], [project]);
+  const fileNames = useMemo(() => [...new Set(project?.languages.flatMap(lang => lang.files.map(file => file.name)) ?? [])], [project]);
+  const missingCount = useMemo(() => rows.filter(row => project?.languages.some(lang => isMissing(rowValue(lang, row)))).length, [rows, project]);
+  const completed = rows.length ? Math.round((rows.length - missingCount) / rows.length * 100) : 0;
+  const filtered = useMemo(() => rows.filter(row => {
+    if (selectedFile !== 'all' && row.fileName !== selectedFile) return false;
+    if (editing === row.id) return true;
+    const needle = query.toLocaleLowerCase();
+    if (needle && !`${namespace(row.fileName)}.${keyLabel(row.path)}`.toLocaleLowerCase().includes(needle) && !project?.languages.some(lang => `${lang.code}.${namespace(row.fileName)}.${keyLabel(row.path)} ${rowValue(lang, row) ?? ''}`.toLocaleLowerCase().includes(needle))) return false;
+    const missing = project?.languages.some(lang => isMissing(rowValue(lang, row)));
+    return filter === 'all' || (filter === 'missing' ? missing : !missing);
+  }), [rows, project, query, filter, selectedFile, editing]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const displayed = filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+
+  useEffect(() => {
+    if (loading || initialized.current) return;
+    initialized.current = true;
+    if (params.get('demo') === '1') {
+      const demo = projects.find(p => p.id === 'locale-demo') ?? createDemo();
+      if (!projects.some(p => p.id === demo.id)) update(demo);
+      setActiveId(demo.id);
+    } else if (params.get('new') === '1') setCreateOpen(true);
+    if (params.has('demo') || params.has('new')) setParams({}, { replace: true });
+  }, [loading, params, projects, update, setParams]);
+
+  useEffect(() => { setSelectedFile('all'); setQuery(''); setFilter('all'); setPage(0); setTab('translations'); }, [project?.id]);
+  useEffect(() => { setPage(0); }, [query, filter, selectedFile]);
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key === 'k') { event.preventDefault(); search.current?.focus(); } };
+    window.addEventListener('keydown', shortcut); return () => window.removeEventListener('keydown', shortcut);
+  }, []);
+
+  function selectProject(id: string) { setActiveId(id); setMobileSidebar(false); }
+  function saveNewProject(created: Project) { update(created); setActiveId(created.id); toast.success('A new home for your words'); }
+  function edit(code: string, row: TranslationRow, value: string) { if (project) { try { update(editTranslation(project, code, row, value)); } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not edit this key.'); } } }
+  function confirmRemoveLanguage(code: string) { if (!project) return; const language = project.languages.find(lang => lang.code === code)!; setConfirmation({ title: `Remove ${language.name}?`, description: `This removes the ${language.files.length} imported files and edits for ${code} from this project. Export them first if you need a copy. This cannot be undone.`, action: () => { update({ ...project, updatedAt: Date.now(), languages: project.languages.filter(lang => lang.code !== code) }); toast.success('Language removed'); } }); }
+  function confirmRemoveProject() { if (!project) return; setConfirmation({ title: `Remove “${project.name}”?`, description: 'This permanently removes this project and all of its translations from this browser. Export your files first if you need a copy.', action: async () => { await remove(project.id); setActiveId(null); toast.success('Project removed'); } }); }
+  function openDemo() { const demo = projects.find(p => p.id === 'locale-demo') ?? createDemo(); if (!projects.some(p => p.id === demo.id)) update(demo); setActiveId(demo.id); }
+
+  if (loading) return <div className="loading-page"><Loader2 className="animate-spin" size={22} /> Opening your local workspace…</div>;
+
+  return <div className="workspace-shell">
+    {mobileSidebar && <button className="sidebar-overlay" aria-label="Close navigation" onClick={() => setMobileSidebar(false)} />}
+    <aside className={`workspace-sidebar ${mobileSidebar ? 'is-open' : ''}`}><div className="sidebar-brand"><Brand /><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileSidebar(false)}><X size={19} /></button></div><div className="sidebar-content">
+      <DropdownMenu><DropdownMenuTrigger asChild><button className="project-switcher"><span className="project-avatar">{project?.name.charAt(0).toLowerCase() ?? <Plus size={16} />}</span><span>{project?.name ?? 'Your workspace'}<small>{projects.length ? `${projects.length} ${projects.length === 1 ? 'project' : 'projects'} · personal workspace` : 'Something good starts here'}</small></span><ChevronDown size={14} /></button></DropdownMenuTrigger><DropdownMenuContent align="start" className="project-switcher-menu">{projects.map(item => <DropdownMenuItem onSelect={() => selectProject(item.id)} key={item.id}><span className="menu-project-name">{item.name}</span>{project?.id === item.id && <Check size={13} />}</DropdownMenuItem>)}{projects.length > 0 && <DropdownMenuSeparator />}<DropdownMenuItem onSelect={() => setCreateOpen(true)}><Plus size={15} /> Create a project</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      <div className="sidebar-section-label">WORKSPACE</div><nav className="sidebar-nav" aria-label="Workspace navigation"><button className={tab === 'translations' ? 'active' : ''} onClick={() => { setTab('translations'); setMobileSidebar(false); }}><Languages size={17} /><span>Translations</span><span className="nav-count">{rows.length}</span></button><button className={tab === 'languages' ? 'active' : ''} onClick={() => { setTab('languages'); setMobileSidebar(false); }}><Globe2 size={17} /><span>Languages</span><span className="nav-count">{project?.languages.length ?? 0}</span></button><button disabled={!project} onClick={() => { setSettingsOpen(true); setMobileSidebar(false); }}><Settings2 size={17} /><span>Project settings</span></button></nav>
+      <div className="sidebar-section-label namespaces-label">NAMESPACES{project && <button aria-label="Import a namespace" title="Import files" onClick={() => setImportCode('')}><Plus size={14} /></button>}</div><nav className="sidebar-nav namespace-nav" aria-label="Namespace filters"><button className={selectedFile === 'all' && tab === 'translations' ? 'namespace-active' : ''} onClick={() => { setSelectedFile('all'); setTab('translations'); setMobileSidebar(false); }}><FolderClosed size={16} /><span>All namespaces</span></button>{fileNames.map(file => <button key={file} className={selectedFile === file && tab === 'translations' ? 'namespace-active' : ''} onClick={() => { setSelectedFile(file); setTab('translations'); setMobileSidebar(false); }}><FileJson2 size={15} /><span>{file}</span><span className="namespace-count">{rows.filter(row => row.fileName === file).length}</span></button>)}{!fileNames.length && <p className="no-namespaces">Your files will feel at home here.</p>}</nav>
+      {project?.languages.length ? <div className="sidebar-progress"><div><span>A little progress, every day.</span><span>{completed}%</span></div><div className="progress-track"><span style={{ width: `${completed}%` }} /></div><small>{rows.length - missingCount} of {rows.length} keys translated in every language</small></div> : null}
+    </div><div className="sidebar-bottom"><div className="local-storage-note"><span className="storage-icon"><HardDrive size={18} /></span><div>Happily local.<small>At home in your browser.</small></div><ShieldCheck size={16} /></div><button className="sidebar-help" onClick={() => setHelpOpen(true)}><CircleHelp size={15} /> A little help <ArrowRight size={13} /></button></div></aside>
+    <div className="workspace-main"><header className="workspace-topbar"><div className="breadcrumb"><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileSidebar(true)}><Menu /></Button><LayoutGrid size={15} /><span>{project?.name ?? 'Your workspace'}</span><span className="breadcrumb-slash">/</span><strong>{tab === 'translations' ? 'Translations' : 'Languages'}</strong>{project?.id === 'locale-demo' && <span className="demo-badge">DEMO</span>}</div><div className="topbar-right"><ThemeToggle /><span className={`save-status ${saveState}`} role="status">{saveState === 'saving' ? <Loader2 size={13} className="animate-spin" /> : saveState === 'error' ? <span className="status-dot error" /> : <span className="status-dot" />}{saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Not saved' : 'Saved on this device'}</span><Link to="/" className="back-home" title="Back to homepage"><ArrowLeft size={14} /><span>Home</span></Link></div></header>
+      {storageError && <div className="storage-error" role="alert"><span>{storageError}</span><Button variant="outline" size="sm" onClick={retry}>Retry saving</Button></div>}
+      {!project ? <div className="workspace-empty"><div className="empty-art"><Languages size={52} strokeWidth={1.2} /><span>✳</span></div><div className="eyebrow">YOUR WORDS BELONG HERE</div><h1>A fresh start.<br />In every language.</h1><p>Bring your i18next files together in one quiet little workspace.<br />Make your first project, and we’ll take it from there.</p><Button size="lg" onClick={() => setCreateOpen(true)}><Plus /> Create your first project</Button><button className="text-button" onClick={openDemo}>Or have a look around the demo <ArrowRight size={14} /></button><div className="empty-local-note"><ShieldCheck size={15} /> No account. No cloud. Just your words.</div></div> : <main className="workspace-content"><div className="workspace-heading"><div><div className="workspace-eyebrow">{tab === 'translations' ? 'A LITTLE CARE FOR EVERY WORD' : 'MORE WAYS TO SAY HELLO'}</div><h1>{tab === 'translations' ? 'A world of possibilities.' : 'Every language belongs.'}</h1><p>{tab === 'translations' ? (project.description || 'Find the right words. Make yourself understood.') : 'Your languages, dialects, and the files that bring them to life.'}</p></div><div className="workspace-actions"><Button variant="outline" onClick={() => setImportCode('')}><Upload /> Import files</Button><Button disabled={!project.languages.some(language => language.files.length)} onClick={() => setExportCode('all')}><ArrowDownToLine /> Export files</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Project actions"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setSettingsOpen(true)}><Settings2 /> Edit project</DropdownMenuItem><DropdownMenuItem onSelect={() => setCreateOpen(true)}><Plus /> New project</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={confirmRemoveProject} className="text-destructive"><Trash2 /> Delete project</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></div>
+      {tab === 'translations' ? <><div className="workspace-stats"><div><span className="stat-icon peach"><Braces size={18} /></span><strong>{rows.length}</strong><span>translation keys</span></div><div><span className="stat-icon lilac"><Globe2 size={18} /></span><strong>{project.languages.length}</strong><span>{project.languages.length === 1 ? 'language' : 'languages'}</span></div><div><span className="stat-icon sage"><FolderClosed size={18} /></span><strong>{fileNames.length}</strong><span>{fileNames.length === 1 ? 'namespace' : 'namespaces'}</span></div><button className={`missing-stat ${filter === 'missing' ? 'is-active' : ''}`} onClick={() => setFilter(filter === 'missing' ? 'all' : 'missing')}><span className="missing-indicator" /><strong>{missingCount}</strong><span>keys need a little love</span><ArrowRight size={14} /></button></div>
+        {!rows.length ? <div className="project-empty"><span className="dialog-icon peach"><FileJson2 size={28} /></span><h2>{project.languages.length ? 'Your language is ready.' : 'Let’s bring your words in.'}</h2><p>{project.languages.length ? 'Import JSON into any language to add your translation keys. They’ll appear across every language in this project.' : 'Create a language now, or import your existing JSON files to bring in languages and translation keys together.'}</p><div className="empty-state-actions"><Button onClick={() => setAddLanguageOpen(true)}><Plus /> Add language</Button><Button variant="outline" onClick={() => setImportCode(project.languages[0]?.code ?? '')}><Upload /> Import JSON files</Button></div><div className="example-path"><span>en</span><i>.</i><span>common</span><i>.</i><span>meters.smart_meter</span></div></div> : <div className="translations-panel"><div className="table-toolbar"><div className="search-input"><Search size={16} /><input ref={search} aria-label="Search keys or translations" placeholder="Search keys or translations…" value={query} onChange={e => setQuery(e.target.value)} />{query ? <button aria-label="Clear search" onClick={() => setQuery('')}><X size={14} /></button> : <kbd>⌘ K</kbd>}</div><div className="table-toolbar-right"><select aria-label="Filter translations" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">All translations</option><option value="missing">Missing translations</option><option value="complete">Complete translations</option></select><span className="toolbar-divider" /><Button variant="ghost" size="sm" onClick={() => setAddLanguageOpen(true)}><Plus size={15} /> Add language</Button></div></div>{selectedFile !== 'all' && <div className="active-namespace"><FileJson2 size={13} />{selectedFile}<button aria-label="Clear namespace filter" onClick={() => setSelectedFile('all')}><X size={12} /></button></div>}<TranslationTable project={project} rows={displayed} onEdit={edit} setEditing={setEditing} onImport={setImportCode} onExport={setExportCode} onRemoveLanguage={confirmRemoveLanguage} /><div className="table-footer"><span>{filtered.length ? `Showing ${currentPage * PAGE_SIZE + 1}–${Math.min((currentPage + 1) * PAGE_SIZE, filtered.length)} of ${filtered.length} keys` : 'No matching keys'}</span>{totalPages > 1 ? <div className="pagination"><Button variant="ghost" size="icon" aria-label="Previous page" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft /></Button><span>{currentPage + 1} / {totalPages}</span><Button variant="ghost" size="icon" aria-label="Next page" disabled={currentPage === totalPages - 1} onClick={() => setPage(currentPage + 1)}><ChevronRight /></Button></div> : <span><CheckCheck size={13} /> A little care goes a long way.</span>}</div></div>}
+        <div className="editor-footnote"><span><ShieldCheck size={14} /> Your translations never leave this browser.</span><span>Click any translation to make it your own.</span></div>
+      </> : <><div className="languages-heading"><span>{project.languages.length} {project.languages.length === 1 ? 'language' : 'languages'} in this project</span><Button variant="outline" size="sm" onClick={() => setAddLanguageOpen(true)}><Plus size={14} /> Add language</Button></div><div className="languages-grid">{project.languages.map(language => {
+        const translated = rows.filter(row => !isMissing(rowValue(language, row))).length;
+        const percent = rows.length ? Math.round(translated / rows.length * 100) : 0;
+        return <article className="language-card" key={language.code}><header><LanguageMark code={language.code} /><div><h2>{language.name}</h2><span>{language.code}</span></div><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Manage ${language.name}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setImportCode(language.code)}><Upload /> Import files</DropdownMenuItem><DropdownMenuItem onSelect={() => setExportCode(language.code)}><ArrowDownToLine /> Export language</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onSelect={() => confirmRemoveLanguage(language.code)}><Trash2 /> Remove language</DropdownMenuItem></DropdownMenuContent></DropdownMenu></header><div className="language-completion"><span>{translated} of {rows.length} keys translated</span><strong>{percent}%</strong></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><div className="language-files">{!language.files.length && <p className="empty-language-files">No files yet. Fill in existing keys in Translations, or import a JSON file.</p>}{language.files.map(file => <div key={file.name}><FileJson2 size={15} /><span>{file.name}<small>{stringLeaves(file.data).length} keys</small></span><Button variant="ghost" size="icon" aria-label={`Download ${language.code}/${file.name}`} onClick={() => downloadFile(file)}><ArrowDownToLine size={15} /></Button></div>)}</div><button className="language-import" onClick={() => setImportCode(language.code)}><Plus size={14} /> {language.files.length ? 'Import more files' : 'Import files'}</button></article>;
+      })}<button className="add-language-card" onClick={() => setAddLanguageOpen(true)}><span><Plus size={23} /></span><strong>Another way to say hello.</strong><p>Create a language with blank translations. No upload needed.</p></button></div></>}
+      </main>}
+      <footer className="workspace-footer"><span>Made for your words. Built to stay local.</span><span className="footer-flower">✳</span></footer>
+    </div>
+    {createOpen && <ProjectDialog open onClose={() => setCreateOpen(false)} onSave={saveNewProject} />}
+    {settingsOpen && project && <ProjectDialog key={project.id} open project={project} onClose={() => setSettingsOpen(false)} onSave={update} />}
+    {addLanguageOpen && project && <AddLanguageDialog project={project} onClose={() => setAddLanguageOpen(false)} onCreate={update} onImport={setImportCode} />}
+    {importCode !== null && project && <ImportDialog project={project} initialCode={importCode} onClose={() => setImportCode(null)} onImport={update} />}
+    {exportCode !== null && project && <ExportDialog project={project} initialCode={exportCode} onClose={() => setExportCode(null)} />}
+    {confirmation && <ConfirmDialog title={confirmation.title} description={confirmation.description} onClose={() => setConfirmation(null)} onConfirm={confirmation.action} />}
+    <Dialog open={helpOpen} onOpenChange={setHelpOpen}><DialogContent><div className="dialog-icon sage"><CircleHelp size={23} /></div><DialogHeader><DialogTitle>A little help, close at hand.</DialogTitle><DialogDescription>Locale is a local workspace for your i18next translations.</DialogDescription></DialogHeader><div className="help-content"><h3>Bring your existing files</h3><p>Create a project, then add a language with no upload or import one or more JSON files. New languages can start with blank translations for an existing language’s keys. A file named <code>common.json</code> becomes the <code>common</code> namespace.</p><h3>Find the right words</h3><p>Click any translation to edit it. Search with <kbd>⌘ / Ctrl + K</kbd>, filter by namespace, or show only keys with missing translations. Empty strings count as missing. Numbers, booleans, and other JSON values are preserved when you export.</p><h3>Keep a copy</h3><p>Projects are saved to IndexedDB in this browser, on this device. Clearing site data or ending a private browsing session can remove your work. Use Export files to download regular backups.</p><h3>A workspace for one tab</h3><p>Use one editor tab at a time for each project. Files are never sent to a server, and there are no accounts or automatic translations.</p></div><Button variant="outline" onClick={() => setHelpOpen(false)}>Got it <Check size={15} /></Button></DialogContent></Dialog>
+  </div>;
+}
