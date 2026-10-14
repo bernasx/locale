@@ -1,0 +1,13 @@
+# Coolify: select the Docker Compose build pack and this file.
+services:
+  app:
+    build:
+      context: .
+      target: production
+      args:
+        SITE_URL: "${SITE_URL:-}"
+    # Coolify's proxy routes to this container port and handles HTTPS.
+    expose:
+      - "8080"
+    restart: unless-stopped
+    # The production image provides the /health check.

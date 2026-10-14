@@ -18,21 +18,21 @@ Open the URL printed by Vite, usually `http://localhost:5173`. Use **Create a pr
 With Docker and Docker Compose installed, run:
 
 ```sh
-docker compose up --build
+docker compose -f compose.dev.yaml up --build
 ```
 
-Open `http://localhost:5173`. Compose builds the `development` target, mounts the source for live reload, and keeps container dependencies in a named volume. Node.js does not need to be installed on the host. The port is bound to localhost; set `LOCAL_PORT` to choose another host port, for example `LOCAL_PORT=5174 docker compose up --build`.
+Open `http://localhost:5173`. `compose.dev.yaml` builds the `development` target, mounts the source for live reload, and keeps container dependencies in a named volume. Node.js does not need to be installed on the host. The port is bound to localhost; set `LOCAL_PORT` to choose another host port, for example `LOCAL_PORT=5174 docker compose -f compose.dev.yaml up --build`.
 
-Stop with `Ctrl+C`, then run `docker compose down` to remove the container. After changing `package.json` or `package-lock.json`, refresh the dependency volume and rebuild:
+Stop with `Ctrl+C`, then run `docker compose -f compose.dev.yaml down` to remove the container. After changing `package.json` or `package-lock.json`, refresh the dependency volume and rebuild:
 
 ```sh
-docker compose run --rm --no-deps app npm ci
-docker compose up --build
+docker compose -f compose.dev.yaml run --rm --no-deps app npm ci
+docker compose -f compose.dev.yaml up --build
 ```
 
 ## Docker: production and Coolify
 
-The default `Dockerfile` target is `production`. It builds and pre-renders the app using Node.js 24, then serves only the generated static files through Nginx running as an unprivileged user on port `8080`. It includes a `/health` endpoint and Docker health check, SPA routing, the separate noindex workspace entry, and long-lived caching for hashed assets.
+`compose.prod.yaml` builds the `production` target, which is also the default `Dockerfile` target. It builds and pre-renders the app using Node.js 24, then serves only the generated static files through Nginx running as an unprivileged user on port `8080`. It includes a `/health` endpoint and Docker health check, SPA routing, the separate noindex workspace entry, and long-lived caching for hashed assets. The production Compose file has no source mounts or host port mappings and restarts the app unless explicitly stopped. Choose each Compose file with `-f`; they are standalone alternatives, not files to combine.
 
 To try the production build locally:
 
@@ -43,13 +43,15 @@ docker run --rm --name locale-production -p 127.0.0.1:8080:8080 locale:productio
 
 Open `http://localhost:8080`. Omit `--build-arg SITE_URL=...` if you do not want a canonical URL or sitemap.
 
-For [Coolify's Dockerfile build pack](https://coolify.io/docs/applications/builds/dockerfile):
+For [Coolify's Docker Compose build pack](https://coolify.io/docs/applications/builds/docker-compose):
 
-1. Create an application from the Git repository and select **Dockerfile** as the build pack.
-2. Use the repository root as the base directory and `/Dockerfile` as the Dockerfile location. Leave the target empty to use the final production stage, or select `production`.
-3. Set **Ports Exposes** to `8080` and configure your public domain, for example `https://locale.example.com`. Coolify's proxy handles HTTPS; no host port mapping is needed.
-4. Add `SITE_URL=https://locale.example.com` as an environment variable **available at build time**. The Dockerfile declares and consumes this build argument. Changing it requires a rebuild, since SEO metadata is baked into the static files.
+1. Create an application from the Git repository and select **Docker Compose** as the build pack (or **Compose** as the build strategy).
+2. Use `/` as the base directory and `/compose.prod.yaml` as the Docker Compose location. Save and load the Compose definition. Use Coolify's normal managed Compose deployment so it generates the proxy configuration.
+3. Assign a domain to the `app` service, for example `https://locale.example.com:8080`. The `:8080` suffix tells Coolify which internal container port to route to; visitors use `https://locale.example.com`. Coolify's proxy handles HTTPS.
+4. Add `SITE_URL=https://locale.example.com` as an environment variable **available at build time**, without the internal `:8080` suffix. Compose passes it through `build.args` to the Dockerfile. Changing it requires a rebuild, since SEO metadata is baked into the static files. Leaving it empty omits the canonical URL and sitemap.
 5. Deploy. The image includes its own [health check](https://coolify.io/docs/applications/configuration/health-checks) on `/health` at port `8080`.
+
+The [Dockerfile build pack](https://coolify.io/docs/applications/builds/dockerfile) remains an alternative: select `/Dockerfile`, leave the target empty or set it to `production`, expose port `8080`, and supply the same `SITE_URL` build variable.
 
 No database or persistent container storage is required. Projects remain in the user's browser IndexedDB, scoped to the site origin. The local development, local production, and hosted URLs each have separate browser storage; export/import files to move data between them.
 
